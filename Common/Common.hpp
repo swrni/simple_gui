@@ -2,6 +2,7 @@
 
 #include <vector>
 #include <string>
+#include <memory>
 
 struct NoCopy {
 	NoCopy() = default;
@@ -49,12 +50,16 @@ class Union {
 
 		template <>
 		constexpr const T1* get<const T1*>() const {
+			// TODO:: Fix constexprness and ctor.
+			// if constexpr ( state_ != State::kT1 ) throw;
 			if ( state_ != State::kT1 ) throw;
 			return t1_;
 		}
 
 		template <>
 		constexpr const T2* get<const T2*>() const {
+			// TODO:: Fix constexprness and ctor.
+			// if constexpr ( state_ != State::kT2 ) throw;
 			if ( state_ != State::kT2 ) throw;
 			return t2_;
 		}
@@ -70,6 +75,17 @@ class Union {
 			t2_ = t2;
 			state_ = kT2;
 		}
+		bool operator==( const Union& other ) const {
+			if ( state_ != other.state_ ) {
+				return false;
+			}
+			if ( state_ == State::kT1 ) {
+				return ( t1_ == other.t1_ );
+			}
+			else {
+				return ( t2_ == other.t2_ );
+			}
+		}
 
 	private:
 		union {
@@ -84,25 +100,48 @@ class Union {
 		} state_;
 };
 
-template <typename Type>
-struct EventHandler {
-	using Callback = void(*)( const void* );
+struct DataWrapperBase {};
 
-	void Invoke() {
-		callback_( saved_arg_ );
+template <typename StoredObject>
+struct DataWrapper final : public DataWrapperBase {
+	using Derived = DataWrapper<StoredObject>;
+	using DerivedP = const Derived*;
+	
+	static DerivedP Cast( const DataWrapperBase* base ) {
+		return static_cast<DerivedP>( base );
 	}
 
-	const Type type_;
-	const Callback callback_;
-	const void* saved_arg_ = nullptr;
+	DataWrapper(	StoredObject&& stored_object )
+				:	stored_object_( std::move( stored_object ) )
+	{}
+	StoredObject stored_object_;
 };
+
+class EventHandler {
+	public:
+		using Callback = void(*)( const DataWrapperBase* );
+		EventHandler(	Callback callback,
+						std::unique_ptr<DataWrapperBase> stored_data )
+					:	callback_( callback ),
+						stored_data_( std::move( stored_data ) )
+		{}
+		void Invoke() const {
+			callback_( stored_data_.get() );
+		}
+		void Invoke() {
+			callback_( stored_data_.get() );
+		}
+	private:
+		const Callback callback_;
+		std::unique_ptr<DataWrapperBase> stored_data_;
+};
+
 
 inline std::string ToString( const std::wstring& w_str ) {
 	return std::string( std::begin( w_str ), std::end( w_str ) );
 }
 
-inline void TrimString(	std::wstring& str,
-						const std::wstring& cs_to_save );
+inline void TrimString( std::wstring& str, const std::wstring& cs_to_save );
 
 void CleanPath( std::wstring& path );
 

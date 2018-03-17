@@ -11,9 +11,52 @@
 
 
 namespace GUI {
+	
+	
 
+namespace Proto2 {
+		
+	struct WidgetProcedureBase {};
+
+	template <	typename Widget,
+				typename _WidgetP,
+				typename ...Args
+	>
+	struct WidgetProcedure final : public WidgetProcedureBase {
+		using WidgetP = _WidgetP;
+		using Callback = void(*)( WidgetP, Args... );
+		using Derived = WidgetProcedure<Widget, WidgetP, Args...>;
+
+		explicit WidgetProcedure(	WidgetP widget, Callback callback )
+								:	widget_( widget ), callback_( callback )
+		{}
+		
+		static Derived* Cast( WidgetProcedureBase* base ) {
+			return static_cast<Derived*>( base );
+		}
+		static const Derived* Cast( const WidgetProcedureBase* base ) {
+			return static_cast<const Derived*>( base );
+		}
+		inline void Invoke( Args... args ) const {
+			callback_(
+				widget_,
+				args...
+			);
+		}
+
+		WidgetP widget_;
+		Callback callback_;
+	};
+
+};
 
 class Window : NoCopy {
+	private:
+		/*template <typename Widget>
+		using Renderer = Proto2::WidgetProcedure<
+			Widget,
+			const Widget*
+		>;*/
 	public:
 		enum class WidgetType {
 			kButton,
@@ -23,19 +66,19 @@ class Window : NoCopy {
 		struct WidgetProcBase {
 			using WidgetUnion = Union<Button, TextEdit>;
 
-			template <typename ErrorType>
-			WidgetProcBase( const ErrorType* ) {
-				throw;
+			explicit WidgetProcBase(	const Button* button )
+									:	type_( WidgetType::kButton ),
+										widget_( button )
+			{}
+			explicit WidgetProcBase(	const TextEdit* text_edit )
+									:	type_( WidgetType::kTextEdit ),
+										widget_( text_edit )
+			{}
+			bool operator==( const WidgetProcBase* other ) const {
+				return	( other ) &&
+						( type_ == other->type_ ) &&
+						( widget_ == other->widget_ );
 			}
-			WidgetProcBase(	const Button* button )
-						:	type_( WidgetType::kButton ),
-							widget_( button )
-			{}
-			WidgetProcBase(	const TextEdit* text_edit )
-						:	type_( WidgetType::kTextEdit ),
-							widget_( text_edit )
-			{}
-
 			const WidgetType type_;
 			const WidgetUnion widget_;
 		};
@@ -45,7 +88,6 @@ class Window : NoCopy {
 			WidgetRenderer(	const Widget* widget )
 						:	WidgetProcBase( widget )
 			{}
-
 			inline void Render() const {
 				if ( type_ == WidgetType::kButton ) {
 					widget_.get<const Button*>()->Render();
@@ -106,59 +148,100 @@ class Window : NoCopy {
 				}
 			}
 		};
-
+		
 	public:
 		Window(	const sf::VideoMode& video_mode,
 				const sf::String& window_name,
 				const sf::Uint32& style = sf::Style::Default )
-			:	render_window_( video_mode, window_name, style )
+			:	render_window_( video_mode, window_name, ValidateStyle( style ) )
 		{}
-
-		inline Button* CreateButton(	const sf::Vector2f& position,
-										const ButtonThemes& button_themes = {} )
-		{
-			buttons_.push_back(
-				std::make_unique<Button>(
-					render_window_,
-					position,
-					button_themes
-				)
+		
+		template <typename Widget>
+		void MakeHoverable( const Widget* widget ) {
+			on_event_listeners_[ MouseEventType::kOnHover ].push_back(
+				WidgetOnEvent( widget )
 			);
-			auto object = buttons_.back().get();
-			render_procedures_.push_back( WidgetRenderer( object ) );
-			on_event_procedures_.push_back( WidgetOnEvent( object ) );
-			return object;
 		}
-
-		inline TextEdit* CreateTextEdit(
-			const sf::Vector2f& position,
-			const TextEdit::TextEditThemes& text_edit_themes = TextEdit::DefaultThemes() )
+		
+		template <typename Widget>
+		void MakeSelectable( const Widget* widget ) {
+			on_event_listeners_[ MouseEventType::kOnHover ].push_back(
+				WidgetOnEvent( widget )
+			);
+			on_event_listeners_[ MouseEventType::kOnSelect ].push_back(
+				WidgetOnEvent( widget )
+			);
+		}
+		
+		template <typename Widget>
+		void MakeEditable( const Widget* widget ) {
+			MakeSelectable( widget );
+			on_keyboard_input_procedures_.push_back(
+				WidgetOnKeyboardEvent( widget )
+			);
+		}
+		
+		// template <typename Widget>
+		template <typename Widget, typename Derived = WidgetWrapper<Widget>>
+		Widget* CreateWidget(	const sf::Vector2f& position,
+								const ButtonThemes::EventsToThemes& events_to_themes )
 		{
-			text_edits_.push_back(
-				std::make_unique<TextEdit>(
+			widgets_.push_back(
+				std::make_unique<Derived>(
+					WidgetType::kButton,
 					render_window_,
 					position,
-					text_edit_themes
+					events_to_themes
 				)
 			);
-			auto object = text_edits_.back().get();
-			render_procedures_.push_back( WidgetRenderer( object ) );
-			on_event_procedures_.push_back( WidgetOnEvent( object ) );
-			on_keyboard_input_procedures_.push_back( WidgetOnKeyboardEvent( object ) );
-			return object;
+			auto widget_base = widgets_.back().get();
+			auto widget = Derived::Cast( widget_base )->getWidget();
+			// render_procedures_.push_back( WidgetRenderer( widget ) );
+
+
+			
+			using Renderer = Proto2::WidgetProcedure<
+				Widget,
+				const Widget*
+			>;
+			using WidgetP = Renderer::WidgetP;
+			using Callback = Renderer::Callback;
+			
+			const Widget* widget_const = Derived::Cast( widget_base )->getWidget();
+
+			Renderer renderer(
+				widget_const,
+				[]( WidgetP widget ) {
+					widget->Render();
+				}
+			);
+
+			render_procedures_2_.push_back(
+				std::make_unique<Renderer>( renderer )
+			);
+
+
+			return widget;
 		}
 
 		inline void OnMouseMoved() {
-			widget_hovered_ = WidgetHovered();
-
-			for ( const auto& widget : on_event_procedures_ ) {
-				if ( &widget == widget_hovered_ ) {
-					widget_hovered_->OnEvent( MouseEventType::kOnHover );
-				}
-				else {
-					widget.OnEvent( MouseEventType::kIdle );
-				}
+			auto currently_hovered = WidgetHovered();
+			if ( !currently_hovered && !widget_hovered_ ) {
+				return;
 			}
+			if ( currently_hovered == widget_hovered_ ) {
+				// Ongoing hover.
+				currently_hovered->OnEvent( MouseEventType::kOnHover );
+			}
+			else if ( currently_hovered && !widget_hovered_ ) {
+				// First hover.
+				currently_hovered->OnEvent( MouseEventType::kOnHover );
+			}
+			else if ( !currently_hovered && widget_hovered_ ) {
+				// First unhover.
+				widget_hovered_->OnEvent( MouseEventType::kIdle );
+			}
+			widget_hovered_ = currently_hovered;
 		}
 
 		inline void OnMouseButtonPressed() {
@@ -167,15 +250,19 @@ class Window : NoCopy {
 			if (	widget_selected_ &&
 					widget_pressed_ != widget_selected_ )
 			{
-				widget_selected_->OnEvent( MouseEventType::kOnUnselect );
+				// std::cout << "[Window::OnMouseButtonPressed] UnSelect\n";
+				widget_selected_->OnEvent( MouseEventType::kOnUnSelect );
 				widget_selected_ = nullptr;
 			}
-
-			for ( auto& widget : on_event_procedures_ ) {
-				if ( &widget == widget_hovered_ ) {
+			
+			// std::wcout << on_event_listeners_[ MouseEventType::kOnSelect ].size() << L'\n';
+			for ( const auto& widget : on_event_listeners_[ MouseEventType::kOnSelect ] ) {
+				if ( widget == widget_hovered_ ) {
+					// std::cout << "OnDrag\n";
 					widget.OnEvent( MouseEventType::kOnDrag );
 				}
 				else {
+					// std::cout << "Idle\n";
 					widget.OnEvent( MouseEventType::kIdle );
 				}
 			}
@@ -183,7 +270,9 @@ class Window : NoCopy {
 
 		inline void OnMouseButtonReleased() {
 			if ( !widget_pressed_ ) return;
+			// std::wcout << "widget_pressed_\n";
 			if ( const auto widget_currently_hovered = WidgetHovered() ) {
+				// std::wcout << "widget_currently_hovered = WidgetHovered()\n";
 				if ( widget_currently_hovered == widget_pressed_ ) {
 					widget_currently_hovered->OnEvent( MouseEventType::kOnSelect );
 					widget_selected_ = widget_currently_hovered;
@@ -206,19 +295,49 @@ class Window : NoCopy {
 			for ( const auto& renderer : render_procedures_ ) {
 				renderer.Render();
 			}
+
+			using BRenderer = Proto2::WidgetProcedure<
+				Button,
+				const Button*
+			>;
+			for ( const auto& renderer : render_procedures_2_ ) {
+				// TODO:: Why this cast does not fail? (From TextEdit* to Button*, no inheritance)
+				BRenderer::Cast( renderer.get() )->Invoke();
+			}
 		}
 
 	private:
 		inline const WidgetOnEvent* WidgetHovered() {
-			const sf::Vector2f mouse = static_cast<sf::Vector2f>(
+			const auto mouse = static_cast<sf::Vector2f>(
 				sf::Mouse::getPosition( render_window_ )
 			);
-			for ( const auto& widget : on_event_procedures_ ) {
+			for ( const auto& widget : on_event_listeners_[ MouseEventType::kOnHover ] ) {
 				if ( widget.getBounds().contains( mouse ) ) {
 					return &widget;
 				}
 			}
 			return nullptr;
+		}
+
+		inline bool ListensEvent(	const GUI::MouseEventType event,
+									const ButtonThemes::EventsToThemes& events_to_themes )
+		{
+			const auto search_on_hover = events_to_themes.find( event );
+			return ( search_on_hover != std::end( events_to_themes ) );
+		}
+
+		inline const sf::Uint32& ValidateStyle( const sf::Uint32& style ) {
+			const bool valid =	( style == sf::Style::None ) ||
+								( style == sf::Style::Titlebar ) ||
+								( style == sf::Style::Resize ) ||
+								( style == sf::Style::Close ) ||
+								( style == sf::Style::Fullscreen ) ||
+								( style == sf::Style::Default );
+			if ( !valid ) {
+				auto msg = "Unknown style: " + std::to_string( style );
+				throw std::runtime_error( msg );
+			}
+			return style;
 		}
 
 		sf::RenderWindow render_window_;
@@ -227,13 +346,47 @@ class Window : NoCopy {
 		const WidgetOnEvent* widget_selected_ = nullptr;
 		const WidgetOnEvent* widget_pressed_ = nullptr;
 		
-		std::vector<std::unique_ptr<Button>> buttons_;
-		std::vector<std::unique_ptr<TextEdit>> text_edits_;
+		class WidgetWrapperBase {
+			public:
+				WidgetWrapperBase( const WidgetType type ) : type_( type ) {}
+				const WidgetType type_;
+		};
+		template <typename Widget>
+		class WidgetWrapper final : public WidgetWrapperBase, NoCopy {
+			public:
+				using Derived = WidgetWrapper<Widget>;
+
+				template <typename ...Args>
+				WidgetWrapper( const WidgetType type, Args&&... args )
+							:	WidgetWrapperBase( type ),
+								widget_( std::forward<Args>( args )... )
+				{}
+				
+				static Derived* Cast( WidgetWrapperBase* base ) {
+					return static_cast<Derived*>( base );
+				}
+				static const Derived* Cast( const WidgetWrapperBase* base ) {
+					return static_cast<const Derived*>( base );
+				}
+				
+				Widget* getWidget() {
+					return &widget_;
+				}
+				const Widget* getWidget() const {
+					return &widget_;
+				}
+
+			private:
+				Widget widget_;
+		};
+
+		std::vector<std::unique_ptr<WidgetWrapperBase>> widgets_;
 
 		std::vector<WidgetRenderer> render_procedures_;
-		std::vector<WidgetOnEvent> on_event_procedures_;
+		std::vector<std::unique_ptr<Proto2::WidgetProcedureBase>> render_procedures_2_;
+
+		std::map<MouseEventType, std::vector<WidgetOnEvent>> on_event_listeners_;
 		std::vector<WidgetOnKeyboardEvent> on_keyboard_input_procedures_;
 };
-
 
 };
